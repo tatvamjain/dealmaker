@@ -6,6 +6,11 @@ from fastapi.responses import JSONResponse
 
 from app.config import get_settings
 from app.services.paypal import PayPalClient, PayPalError
+from decimal import Decimal
+from uuid import uuid4
+
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 
 settings = get_settings()
 
@@ -38,3 +43,44 @@ async def paypal_health(request: Request) -> JSONResponse:
     except (PayPalError, httpx.HTTPError) as exc:
         return JSONResponse(status_code=503, content={"status": "ERROR", "detail": str(exc)})
     return JSONResponse(content={"status": "OK", "base_url": settings.paypal_base_url})
+
+@app.exception_handler(PayPalError)
+async def paypal_error_handler(request: Request, exc: PayPalError) -> JSONResponse:
+    logging.getLogger(__name__).error("PayPal failure: %s", exc)
+    return JSONResponse(status_code=502, content={"detail": "Payment provider error"})
+
+
+class DevOrderRequest(BaseModel):
+    amount: Decimal = Field(gt=0, max_digits=10, decimal_places=2)
+    description: str = Field(min_length=1, max_length=127)
+
+
+@app.post("/dev/orders")
+async def dev_create_order(body: DevOrderRequest, request: Request) -> dict:
+    if settings.app_env != "development":
+        raise HTTPException(status_code=404)
+    base = str(request.base_url).rstrip("/")
+    order = await request.app.state.paypal.create_order(
+        amount=body.amount,
+        currency="USD",
+        description=body.description,
+        return_url=f"{base}/dev/paypal-return",
+        cancel_url=f"{base}/dev/paypal-cancel",
+        request_id=str(uuid4()),
+    )
+    approve_url = next(link["href"] for link in order["links"] if link["rel"] == "payer-action")
+    return {"order_id": order["id"], "status": order["status"], "approve_url": approve_url}
+
+
+@app.get("/dev/paypal-return")
+async def dev_paypal_return(token: str, request: Request) -> dict:
+    # PayPal sends the order ID back as ?token=...
+    capture = await request.app.state.paypal.capture_order(
+        order_id=token, request_id=f"capture-{token}"
+    )
+    return {"order_id": capture["id"], "status": capture["status"]}
+
+
+@app.get("/dev/paypal-cancel")
+async def dev_paypal_cancel() -> dict:
+    return {"status": "cancelled by shopper"}
