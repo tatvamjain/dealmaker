@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     paypal_client_secret: SecretStr
     paypal_base_url: str = "https://api-m.sandbox.paypal.com"
     gemini_api_key: SecretStr
-
+    gemini_model:str
 
 @lru_cache
 def get_settings() -> Settings:

@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from app.config import get_settings
 from app.services.paypal import PayPalClient, PayPalError
+logging.basicConfig(level=logging.INFO)
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +21,10 @@ settings = get_settings()
 async def lifespan(app: FastAPI):
     # One shared PayPal client so the access token and connection pool are reused
     app.state.paypal = PayPalClient(settings)
+    app.state.negotiator = Negotiator(
+        settings.gemini_api_key.get_secret_value(), settings.gemini_model
+    )
+    app.state.sessions = {}  # in-memory for now; a database replaces this later
     yield
     await app.state.paypal.close() 
 
@@ -85,3 +90,23 @@ async def dev_paypal_return(token: str, request: Request) -> dict:
 @app.get("/dev/paypal-cancel")
 async def dev_paypal_cancel() -> dict:
     return {"status": "cancelled by shopper"}
+
+
+from app.agent.negotiator import Negotiator
+
+class ChatRequest(BaseModel):
+    session_id: str = Field(min_length=1, max_length=64)
+    message: str = Field(min_length=1, max_length=500)
+
+
+@app.post("/dev/negotiate")
+async def dev_negotiate(body: ChatRequest, request: Request) -> dict:
+    if settings.app_env != "development":
+        raise HTTPException(status_code=404)
+    session = request.app.state.sessions.setdefault(
+        body.session_id, {"history": [], "state": {}}
+    )
+    reply = await request.app.state.negotiator.reply(
+        session["history"], session["state"], body.message
+    )
+    return {"reply": reply, "current_offer": session["state"].get("current_offer")}
