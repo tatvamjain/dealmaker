@@ -2,10 +2,11 @@ import logging
 from contextlib import asynccontextmanager
 from decimal import Decimal
 from uuid import uuid4
-
+from app.agent.catalog import PRODUCTS
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
+from google.genai import errors as genai_errors
 from pydantic import BaseModel, Field
 from app.agent.negotiator import Negotiator
 from app.agent.tools import ToolContext
@@ -55,6 +56,16 @@ async def paypal_health(request: Request) -> JSONResponse:
 async def paypal_error_handler(request: Request, exc: PayPalError) -> JSONResponse:
     logger.error("PayPal failure: %s", exc)
     return JSONResponse(status_code=502, content={"detail": "Payment provider error"})
+
+
+@app.exception_handler(genai_errors.APIError)
+async def gemini_error_handler(request: Request, exc: genai_errors.APIError) -> JSONResponse:
+    # Quota, rate-limit, or outage on the Gemini side: tell the shopper to retry
+    logger.error("Gemini failure: %s", exc)
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "The sales assistant is busy right now. Please try again in a moment."},
+    )
 
 
 class DevOrderRequest(BaseModel):
@@ -119,3 +130,16 @@ async def dev_negotiate(body: ChatRequest, request: Request) -> dict:
         "current_offer": session["state"].get("current_offer"),
         "checkout": session["state"].get("checkout"),
     }
+class ProductOut(BaseModel):
+    id: str
+    name: str
+    description: str
+    list_price: str
+
+
+@app.get("/api/products")
+def list_products() -> list[ProductOut]:
+    return [
+        ProductOut(id=p.id, name=p.name, description=p.description, list_price=str(p.list_price))
+        for p in PRODUCTS.values()
+    ]
