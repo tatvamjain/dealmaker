@@ -7,7 +7,8 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
-
+from app.agent.negotiator import Negotiator
+from app.agent.tools import ToolContext
 from app.config import get_settings
 from app.services.paypal import PayPalClient, PayPalError
 logging.basicConfig(level=logging.INFO)
@@ -101,12 +102,20 @@ class ChatRequest(BaseModel):
 
 @app.post("/dev/negotiate")
 async def dev_negotiate(body: ChatRequest, request: Request) -> dict:
-    if settings.app_env != "development":
-        raise HTTPException(status_code=404)
     session = request.app.state.sessions.setdefault(
         body.session_id, {"history": [], "state": {}}
     )
-    reply = await request.app.state.negotiator.reply(
-        session["history"], session["state"], body.message
+    base = str(request.base_url).rstrip("/")
+    ctx = ToolContext(
+        session_id=body.session_id,
+        state=session["state"],
+        paypal=request.app.state.paypal,
+        return_url=f"{base}/dev/paypal-return",
+        cancel_url=f"{base}/dev/paypal-cancel",
     )
-    return {"reply": reply, "current_offer": session["state"].get("current_offer")}
+    reply = await request.app.state.negotiator.reply(session["history"], ctx, body.message)
+    return {
+        "reply": reply,
+        "current_offer": session["state"].get("current_offer"),
+        "checkout": session["state"].get("checkout"),
+    }
