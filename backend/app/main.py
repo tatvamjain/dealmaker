@@ -1,16 +1,17 @@
+import logging
 from contextlib import asynccontextmanager
-
-import httpx
-from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import JSONResponse
-
-from app.config import get_settings
-from app.services.paypal import PayPalClient, PayPalError
 from decimal import Decimal
 from uuid import uuid4
 
+import httpx
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+
+from app.config import get_settings
+from app.services.paypal import PayPalClient, PayPalError
+
+logger = logging.getLogger(__name__)
 
 settings = get_settings()
 
@@ -46,7 +47,7 @@ async def paypal_health(request: Request) -> JSONResponse:
 
 @app.exception_handler(PayPalError)
 async def paypal_error_handler(request: Request, exc: PayPalError) -> JSONResponse:
-    logging.getLogger(__name__).error("PayPal failure: %s", exc)
+    logger.error("PayPal failure: %s", exc)
     return JSONResponse(status_code=502, content={"detail": "Payment provider error"})
 
 
