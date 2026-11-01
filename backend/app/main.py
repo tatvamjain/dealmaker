@@ -4,7 +4,9 @@ from decimal import Decimal
 from uuid import uuid4
 from app.agent.catalog import PRODUCTS
 import httpx
-from fastapi import FastAPI, HTTPException, Request
+from typing import Annotated
+
+from fastapi import FastAPI, HTTPException, Path, Request
 from fastapi.responses import JSONResponse
 from google.genai import errors as genai_errors
 from pydantic import BaseModel, Field
@@ -121,8 +123,10 @@ async def dev_negotiate(body: ChatRequest, request: Request) -> dict:
         session_id=body.session_id,
         state=session["state"],
         paypal=request.app.state.paypal,
-        return_url=f"{base}/dev/paypal-return",
-        cancel_url=f"{base}/dev/paypal-cancel",
+        # Through the Vite dev proxy, base is the frontend's address (the proxy keeps the
+        # browser's Host header), so PayPal sends the shopper back to these frontend pages.
+        return_url=f"{base}/order-complete",
+        cancel_url=f"{base}/order-cancelled",
     )
     reply = await request.app.state.negotiator.reply(session["history"], ctx, body.message)
     return {
@@ -143,3 +147,35 @@ def list_products() -> list[ProductOut]:
         ProductOut(id=p.id, name=p.name, description=p.description, list_price=str(p.list_price))
         for p in PRODUCTS.values()
     ]
+
+
+class OrderConfirmation(BaseModel):
+    order_id: str
+    status: str
+    amount: str | None
+    currency: str | None
+
+
+@app.post("/api/orders/{order_id}/capture")
+async def capture_order(
+    # PayPal order IDs are short uppercase codes; rejecting anything else keeps odd input
+    # out of the PayPal URL we build from it
+    order_id: Annotated[str, Path(pattern=r"^[A-Z0-9]{8,32}$")],
+    request: Request,
+) -> OrderConfirmation:
+    # Called by the frontend's thank-you page after PayPal redirects the shopper back.
+    # The request id is the same on every call, so a page reload replays the first
+    # capture instead of charging twice.
+    capture = await request.app.state.paypal.capture_order(
+        order_id=order_id, request_id=f"capture-{order_id}"
+    )
+    try:
+        amount = capture["purchase_units"][0]["payments"]["captures"][0]["amount"]
+    except (KeyError, IndexError):
+        amount = {}
+    return OrderConfirmation(
+        order_id=capture["id"],
+        status=capture["status"],
+        amount=amount.get("value"),
+        currency=amount.get("currency_code"),
+    )
